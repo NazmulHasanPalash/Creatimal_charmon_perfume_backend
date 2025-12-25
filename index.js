@@ -1,12 +1,4 @@
-// server.js (or index.js) — FULL FIXED VERSION
-// ✅ Uses your MongoDB Atlas URI: mongodb+srv://admin:admin112233@creatimal.sw15nau.mongodb.net/?appName=Creatimal
-// ✅ Admin can view ALL customer orders (?all=1 OR default admin = all)
-// ✅ Firebase service account private_key \\n fix
-// ✅ Admin delete (by ObjectId OR email) + safety checks
-// ✅ Safer CORS error handling
-// ✅ FIX: Error handler registered AFTER routes (correct Express order)
-// ✅ FIX: Remove duplication (single file)
-// ✅ IMPROVEMENT (safe): Customer order totals computed server-side + saves DuitNow ref
+// server.js — FULL FIXED VERSION (Local + Vercel safe)
 'use strict';
 
 const express = require('express');
@@ -14,7 +6,9 @@ const cors = require('cors');
 require('dotenv').config();
 
 const { MongoClient, ObjectId } = require('mongodb');
-const admin = require('firebase-admin');
+
+// ✅ Use your firebase-admin.js module (the fixed one)
+const { admin, initFirebaseAdmin } = require('./firebase-admin');
 
 const app = express();
 
@@ -43,7 +37,6 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-// Base64 images can be big
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -52,14 +45,6 @@ const port = Number(process.env.PORT || 5000);
 /* =========================
    Helpers
    ========================= */
-function mustEnv(name) {
-  const v = process.env[name];
-  if (!v || !String(v).trim()) {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-  return String(v).trim();
-}
-
 function safeStr(x) {
   return x === null || x === undefined ? '' : String(x);
 }
@@ -88,7 +73,6 @@ function isValidEmail(v) {
   return s.includes('@') && s.includes('.') && s.length >= 6;
 }
 
-/** Normalize status values coming from UI or API */
 function normalizeStatus(input) {
   const raw = safeStr(input).trim();
   if (!raw) return '';
@@ -120,7 +104,6 @@ function parseBool(v) {
   return s === '1' || s === 'true' || s === 'yes' || s === 'y';
 }
 
-/** DuitNow reference normalization (safe) */
 function normalizeDuitNowRef(v) {
   const s = safeStr(v).trim().toUpperCase();
   const cleaned = s.replace(/[^A-Z0-9/-]/g, '');
@@ -128,62 +111,28 @@ function normalizeDuitNowRef(v) {
 }
 
 /* =========================
-   Mongo URI (UPDATED)
-   =========================
-   TIP (recommended): put this in .env as MONGODB_URI and keep secrets out of code.
-*/
+   Mongo
+   ========================= */
 function buildMongoUri() {
-  // Prefer env override if provided
-  const envUri = safeStr(process.env.MONGODB_URI).trim();
-  if (envUri) return envUri;
-
-  // Otherwise, use your fixed URI
-  return 'mongodb+srv://admin:admin112233@creatimal.sw15nau.mongodb.net/?appName=Creatimal';
+  const uri = safeStr(process.env.MONGODB_URI).trim();
+  if (!uri) {
+    // ✅ IMPORTANT: do NOT hardcode passwords in code (Vercel + GitHub will block pushes)
+    throw new Error('Missing MONGODB_URI. Put it in .env (local) and Vercel Env Vars (production).');
+  }
+  return uri;
 }
+
+const mongoUri = buildMongoUri();
+const client = new MongoClient(mongoUri);
 
 /* =========================
-   Firebase Admin (Auth)
-   =========================
-   Choose ONE method:
-   A) GOOGLE_APPLICATION_CREDENTIALS=/path/to/serviceAccount.json
-   OR
-   B) FIREBASE_SERVICE_ACCOUNT='{"type":"service_account", ... }'
-*/
-function initFirebaseAdmin() {
-  if (admin.apps.length) return;
+   Admin seed
+   ========================= */
+const SEED_ADMIN_EMAIL = safeStr(process.env.SEED_ADMIN_EMAIL || 'nazmul.hasan.palash2000@gmail.com').trim();
 
-  const hasGac = !!safeStr(process.env.GOOGLE_APPLICATION_CREDENTIALS).trim();
-  const saRaw = safeStr(process.env.FIREBASE_SERVICE_ACCOUNT).trim();
-
-  if (hasGac) {
-    admin.initializeApp({ credential: admin.credential.applicationDefault() });
-    console.log('✅ Firebase Admin initialized (applicationDefault).');
-    return;
-  }
-
-  if (saRaw) {
-    let serviceAccount;
-    try {
-      serviceAccount = JSON.parse(saRaw);
-    } catch {
-      throw new Error('FIREBASE_SERVICE_ACCOUNT must be a valid JSON string.');
-    }
-
-    // ✅ IMPORTANT FIX: .env often stores private_key with \\n
-    if (serviceAccount?.private_key && typeof serviceAccount.private_key === 'string') {
-      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
-    }
-
-    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-    console.log('✅ Firebase Admin initialized (service account JSON).');
-    return;
-  }
-
-  throw new Error(
-    'Firebase Admin not configured. Set GOOGLE_APPLICATION_CREDENTIALS or FIREBASE_SERVICE_ACCOUNT.'
-  );
-}
-
+/* =========================
+   Auth middleware
+   ========================= */
 async function requireAuth(req, res, next) {
   try {
     const authHeader = safeStr(req.headers.authorization);
@@ -235,28 +184,17 @@ function makeRequireAdmin(adminsCollection) {
 }
 
 /* =========================
-   Mongo Setup
-   ========================= */
-const mongoUri = buildMongoUri();
-const client = new MongoClient(mongoUri);
-
-/* =========================
-   ✅ Seed Admin Email (HARDCODED)
-   ========================= */
-const SEED_ADMIN_EMAIL = 'nazmul.hasan.palash2000@gmail.com';
-
-/* =========================
    Main
    ========================= */
 async function main() {
   try {
+    // ✅ Firebase init from your dedicated module (handles Vercel env JSON correctly)
     initFirebaseAdmin();
 
     await client.connect();
     await client.db().command({ ping: 1 });
     console.log('✅ MongoDB connected successfully.');
 
-    // ✅ Default DB name for your cluster (override with DB_NAME if you want)
     const dbName = safeStr(process.env.DB_NAME).trim() || 'Charmon';
     const db = client.db(dbName);
 
@@ -264,7 +202,6 @@ async function main() {
     const customerOrdersCollection = db.collection('Customer_orders');
     const adminsCollection = db.collection('Admins');
 
-    // Helpful indexes (safe to run many times)
     await Promise.allSettled([
       adminsCollection.createIndex({ email: 1 }, { unique: true }),
       customerOrdersCollection.createIndex({ customerEmail: 1, createdAt: -1 }, { background: true }),
@@ -273,7 +210,7 @@ async function main() {
 
     const requireAdmin = makeRequireAdmin(adminsCollection);
 
-    // ✅ Seed first admin (hardcoded)
+    // ✅ Seed admin
     const seedEmail = normalizeEmail(SEED_ADMIN_EMAIL);
     if (seedEmail && isValidEmail(seedEmail)) {
       const now = new Date();
@@ -287,7 +224,7 @@ async function main() {
       );
       console.log(`✅ Admin seed ensured for: ${seedEmail}`);
     } else {
-      console.warn('⚠️ SEED_ADMIN_EMAIL is not a valid email. Seed skipped.');
+      console.warn('⚠️ SEED_ADMIN_EMAIL is not valid. Seed skipped.');
     }
 
     /* -------------------- Root -------------------- */
@@ -298,8 +235,6 @@ async function main() {
     /* =========================
        PRODUCTS
        ========================= */
-
-    // GET /products?category=&search=&limit=
     app.get('/products', async (req, res) => {
       try {
         const { category, search, limit } = req.query;
@@ -328,7 +263,6 @@ async function main() {
       }
     });
 
-    // GET /products/:id
     app.get('/products/:id', async (req, res) => {
       try {
         const { id } = req.params;
@@ -346,7 +280,6 @@ async function main() {
       }
     });
 
-    // POST /products (admin only)
     app.post('/products', requireAuth, requireAdmin, async (req, res) => {
       try {
         const product = req.body;
@@ -389,7 +322,6 @@ async function main() {
       }
     });
 
-    // PUT /products/:id (admin only)
     app.put('/products/:id', requireAuth, requireAdmin, async (req, res) => {
       try {
         const { id } = req.params;
@@ -432,7 +364,6 @@ async function main() {
       }
     });
 
-    // DELETE /products/:id (admin only)
     app.delete('/products/:id', requireAuth, requireAdmin, async (req, res) => {
       try {
         const { id } = req.params;
@@ -457,12 +388,8 @@ async function main() {
     });
 
     /* =========================
-       CUSTOMER ORDERS (SECURE)
+       CUSTOMER ORDERS
        ========================= */
-
-    // POST /customer-orders (logged-in user creates their own order)
-    // ✅ Saves duitNowRefNo + itemsTotal + deliveryFee + totalPrice
-    // ✅ Server computes totals using DB price (prevents fake total from client)
     app.post('/customer-orders', requireAuth, async (req, res) => {
       try {
         const body = req.body;
@@ -477,7 +404,6 @@ async function main() {
         }
         const productId = new ObjectId(productIdRaw);
 
-        // ✅ fetch product (ensure exists + use DB price)
         const product = await productsCollection.findOne({ _id: productId });
         if (!product) return res.status(404).json({ message: 'Product not found.' });
 
@@ -495,7 +421,6 @@ async function main() {
           0
         );
 
-        // DuitNow Reference No (required for your workflow)
         const duitNowRefNo = normalizeDuitNowRef(body.duitNowRefNo);
         if (!duitNowRefNo || duitNowRefNo.length < 6) {
           return res.status(400).json({ message: 'Valid DuitNow Reference No. is required.' });
@@ -514,9 +439,8 @@ async function main() {
           return res.status(400).json({ message: 'Valid deliveryAddress is required.' });
         }
 
-        // ✅ compute pricing server-side
         const unitPrice = Math.max(0, toNumber(product?.price, 0));
-        const deliveryFee = Math.max(0, toNumber(body.deliveryFee, 0)); // allow frontend to send (or 0)
+        const deliveryFee = Math.max(0, toNumber(body.deliveryFee, 0));
         const itemsTotal = Math.max(0, unitPrice * orderQuantity);
         const totalPrice = Math.max(0, itemsTotal + deliveryFee);
 
@@ -561,7 +485,6 @@ async function main() {
       }
     });
 
-    // ✅ GET /customer-orders?status=&limit=&email=&all=1
     app.get('/customer-orders', requireAuth, async (req, res) => {
       try {
         const { status, limit, email, all } = req.query;
@@ -571,14 +494,11 @@ async function main() {
         const isAdmin = !!adminRow;
 
         const wantAll = parseBool(all);
-
         let query = {};
 
         if (!isAdmin) {
-          // non-admin: only own
           query.customerEmail = tokenEmail;
         } else {
-          // admin: can filter by ?email= otherwise show all (default)
           const wantEmail = normalizeEmail(email);
           if (wantEmail) query.customerEmail = wantEmail;
           else if (wantAll) query = {};
@@ -602,7 +522,6 @@ async function main() {
       }
     });
 
-    // GET /customer-orders/:id (customer only own; admin any)
     app.get('/customer-orders/:id', requireAuth, async (req, res) => {
       try {
         const { id } = req.params;
@@ -628,7 +547,6 @@ async function main() {
       }
     });
 
-    // PATCH /customer-orders/:id (admin only) - status update
     app.patch('/customer-orders/:id', requireAuth, requireAdmin, async (req, res) => {
       try {
         const { id } = req.params;
@@ -665,7 +583,6 @@ async function main() {
       }
     });
 
-    // PUT /customer-orders/:id (admin only)
     app.put('/customer-orders/:id', requireAuth, requireAdmin, async (req, res) => {
       try {
         const { id } = req.params;
@@ -680,10 +597,9 @@ async function main() {
 
         delete updates._id;
         delete updates.createdAt;
-        delete updates.customerEmail; // never allow changing owner
+        delete updates.customerEmail;
         delete updates.productId;
 
-        // protect server-computed price fields
         delete updates.unitPrice;
         delete updates.itemsTotal;
         delete updates.deliveryFee;
@@ -725,7 +641,6 @@ async function main() {
       }
     });
 
-    // DELETE /customer-orders/:id (admin only)
     app.delete('/customer-orders/:id', requireAuth, requireAdmin, async (req, res) => {
       try {
         const { id } = req.params;
@@ -748,10 +663,8 @@ async function main() {
     });
 
     /* =========================
-       ADMINS (for DisplayAdmin.js)
+       ADMINS
        ========================= */
-
-    // GET /admins (admin only)
     app.get('/admins', requireAuth, requireAdmin, async (_req, res) => {
       try {
         const list = await adminsCollection.find({}).sort({ _id: -1 }).limit(500).toArray();
@@ -762,7 +675,6 @@ async function main() {
       }
     });
 
-    // POST /admins (admin only) body: { email }
     app.post('/admins', requireAuth, requireAdmin, async (req, res) => {
       try {
         const email = normalizeEmail(req.body?.email);
@@ -793,7 +705,6 @@ async function main() {
       }
     });
 
-    // ✅ DELETE /admins/:id (admin only) supports ObjectId OR email
     app.delete('/admins/:id', requireAuth, requireAdmin, async (req, res) => {
       try {
         const raw = safeStr(req.params.id).trim();
@@ -802,7 +713,6 @@ async function main() {
         const tokenEmail = normalizeEmail(req.user?.email);
         const seedNorm = normalizeEmail(SEED_ADMIN_EMAIL);
 
-        // Determine lookup mode
         let query = null;
         if (ObjectId.isValid(raw)) {
           query = { _id: new ObjectId(raw) };
@@ -821,12 +731,10 @@ async function main() {
 
         const targetEmail = normalizeEmail(target.email);
 
-        // Protect seed admin
         if (seedNorm && targetEmail === seedNorm) {
           return res.status(403).json({ message: 'Cannot delete the seed admin.' });
         }
 
-        // Prevent deleting yourself
         if (tokenEmail && targetEmail && tokenEmail === targetEmail) {
           return res.status(403).json({ message: 'You cannot delete your own admin access.' });
         }
@@ -845,7 +753,7 @@ async function main() {
     });
 
     /* =========================
-       FIX: Error handler (CORS) AFTER routes
+       Error handler AFTER routes
        ========================= */
     app.use((err, _req, res, _next) => {
       const msg = safeStr(err?.message);
@@ -856,15 +764,16 @@ async function main() {
       return res.status(500).json({ message: 'Server error.' });
     });
 
-    /* =========================
-       Start server AFTER DB connect
-       ========================= */
-    app.listen(port, () => {
-      console.log(`✅ Server listening at http://localhost:${port}`);
-      if (CORS_ORIGINS.length) console.log('✅ CORS origins:', CORS_ORIGINS);
-      console.log(`✅ Using DB: ${dbName}`);
-      console.log(`✅ Seed admin: ${SEED_ADMIN_EMAIL}`);
-    });
+    console.log(`✅ Using DB: ${dbName}`);
+    console.log(`✅ Seed admin: ${SEED_ADMIN_EMAIL}`);
+
+    // ✅ Only listen when running locally (not when imported by Vercel serverless)
+    if (require.main === module) {
+      app.listen(port, () => {
+        console.log(`✅ Server listening at http://localhost:${port}`);
+        if (CORS_ORIGINS.length) console.log('✅ CORS origins:', CORS_ORIGINS);
+      });
+    }
   } catch (err) {
     console.error('❌ Startup failed:', err?.message || err);
     process.exit(1);
@@ -872,7 +781,7 @@ async function main() {
 }
 
 /* =========================
-   Graceful shutdown
+   Graceful shutdown (local)
    ========================= */
 async function shutdown(signal) {
   try {
@@ -890,3 +799,6 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 main();
+
+// ✅ Export app for serverless platforms (Vercel)
+module.exports = app;

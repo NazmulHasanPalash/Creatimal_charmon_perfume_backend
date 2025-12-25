@@ -1,9 +1,11 @@
 // firebase-admin.js
 // ✅ Robust Firebase Admin SDK init (Local + Vercel safe)
+//
 // Local options:
 //   1) GOOGLE_APPLICATION_CREDENTIALS=./serviceAccountKey.json
 //   2) FIREBASE_SERVICE_ACCOUNT='{"type":"service_account",...}' (JSON string)
 //   3) Auto-detect serviceAccountKey.json (LOCAL ONLY)
+//
 // Vercel:
 //   ✅ Use FIREBASE_SERVICE_ACCOUNT only (recommended)
 //   ❌ Do NOT rely on GOOGLE_APPLICATION_CREDENTIALS file path on Vercel
@@ -18,8 +20,12 @@ function safeStr(v) {
   return v === null || v === undefined ? '' : String(v);
 }
 
+function isPlainObject(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
 function fixPrivateKey(serviceAccount) {
-  if (!serviceAccount || typeof serviceAccount !== 'object') return serviceAccount;
+  if (!isPlainObject(serviceAccount)) return serviceAccount;
 
   const pk = safeStr(serviceAccount.private_key);
   if (!pk) return serviceAccount;
@@ -31,9 +37,13 @@ function fixPrivateKey(serviceAccount) {
 }
 
 function validateServiceAccount(serviceAccount, sourceLabel) {
-  const projectId = safeStr(serviceAccount?.project_id).trim();
-  const clientEmail = safeStr(serviceAccount?.client_email).trim();
-  const privateKey = safeStr(serviceAccount?.private_key).trim();
+  if (!isPlainObject(serviceAccount)) {
+    throw new Error(`${sourceLabel}: service account must be a JSON object.`);
+  }
+
+  const projectId = safeStr(serviceAccount.project_id).trim();
+  const clientEmail = safeStr(serviceAccount.client_email).trim();
+  const privateKey = safeStr(serviceAccount.private_key).trim();
 
   if (!projectId || !clientEmail || !privateKey) {
     throw new Error(
@@ -112,8 +122,14 @@ function findDefaultServiceAccountFileLocalOnly() {
   return null;
 }
 
+function isVercelRuntime() {
+  // Vercel sets VERCEL=1 and also VERCEL_ENV, VERCEL_URL, etc.
+  const v = safeStr(process.env.VERCEL).trim();
+  return v === '1' || v.toLowerCase() === 'true' || !!process.env.VERCEL_ENV || !!process.env.VERCEL_URL;
+}
+
 function initFirebaseAdmin() {
-  // Prevent "already exists" errors (dev hot reload / serverless re-use)
+  // Prevent "already exists" errors (dev hot reload / serverless reuse)
   if (admin.apps && admin.apps.length) return admin;
 
   // Optional: disable Firebase init (NOT for production)
@@ -123,19 +139,20 @@ function initFirebaseAdmin() {
     return admin;
   }
 
-  const isVercel = safeStr(process.env.VERCEL).trim() === '1' || !!process.env.VERCEL;
+  const onVercel = isVercelRuntime();
 
   const gac = safeStr(process.env.GOOGLE_APPLICATION_CREDENTIALS).trim();
   const saRaw = safeStr(process.env.FIREBASE_SERVICE_ACCOUNT).trim();
 
   // ✅ Vercel: MUST use env JSON (best practice)
-  if (isVercel) {
+  if (onVercel) {
     if (!saRaw) {
       throw new Error(
         'Vercel detected but FIREBASE_SERVICE_ACCOUNT is missing.\n' +
-          'Fix: Add FIREBASE_SERVICE_ACCOUNT in Vercel Project → Settings → Environment Variables.'
+          'Fix: Add FIREBASE_SERVICE_ACCOUNT in Vercel → Project → Settings → Environment Variables.'
       );
     }
+
     const serviceAccount = loadServiceAccountFromEnvJson(saRaw);
     admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
     console.log('✅ Firebase Admin initialized (Vercel: FIREBASE_SERVICE_ACCOUNT).');
@@ -150,7 +167,7 @@ function initFirebaseAdmin() {
     return admin;
   }
 
-  // ✅ Any hosting: env JSON
+  // ✅ Any hosting / local: env JSON
   if (saRaw) {
     const serviceAccount = loadServiceAccountFromEnvJson(saRaw);
     admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
